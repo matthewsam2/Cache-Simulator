@@ -1,9 +1,11 @@
 import argparse
-import os
 import random
+import json
+import csv
 
 from dataclasses import dataclass, field
 from enum import Enum
+from pathlib import Path
 
 class ReplacementPolicy(Enum): # Enum for replacement policies
   LRU = "LRU"
@@ -78,29 +80,33 @@ def is_power_of_two(value: int) -> bool:
   # Subtracting 1 flips all bits up to that '1', causing bitwise AND to yield 0 for powers of two.
   return value > 0 and (value & (value - 1)) == 0
 
-def validate_inputs(args):
+def validate_config(config: CacheConfig):
 
-  if args.block_size <= 0:
+  if config.block_size <= 0:
     raise ValueError("Block size must be a positive integer.")
     
-  if args.num_blocks <= 0:
+  if config.num_blocks <= 0:
     raise ValueError("Number of blocks must be a positive integer.")
    
-  if args.num_blocks % args.associativity != 0:
+  if config.num_blocks % config.associativity != 0:
     raise ValueError("Number of blocks must be a multiple of associativity.")
     
-  num_sets = args.num_blocks // args.associativity
+  if not is_power_of_two(config.associativity):
+    raise ValueError("Associativity must be a power of two.")
+  
+  if config.associativity > config.num_blocks:
+    raise ValueError("Associativity cannot be greater than the number of blocks.")
 
-  if not is_power_of_two(args.block_size):
+  if not is_power_of_two(config.block_size):
     raise ValueError("Block size must be a power of two.")
     
-  if not is_power_of_two(num_sets):
+  if not is_power_of_two(config.num_sets):
     raise ValueError("Number of sets (num_blocks / associativity) must be a power of two.")
     
-  if not os.path.isfile(args.datafile):
-    raise FileNotFoundError(f"Datafile '{args.datafile}' not found.")
+  if not Path(config.datafile).is_file():
+    raise FileNotFoundError(f"Datafile '{config.datafile}' not found.")
     
-def parse_args():
+def parse_args() -> argparse.Namespace:
    
   parser = argparse.ArgumentParser(description = "Cache Simulator")
   parser.add_argument("--block_size", type = int, default = 64, help = "Block size in bytes (must be > 0 and a power of two)")
@@ -108,11 +114,10 @@ def parse_args():
   parser.add_argument( # Broken into multiple lines for long help message
     "--associativity",
     type = int,
-    choices = [1, 2, 4, 8, 16],
     default = 1,
-    help = "Cache associativity (1 = direct-mapped, 2 = 2-way, 4 = 4-way, 8 = 8-way, 16 = 16-way)"
+    help = "Cache associativity (1 = direct-mapped, 2 = 2-way, 4 = 4-way, etc. Must be a power of two and less than or equal to num_blocks.)"
   )
-  parser.add_argument("--replacement_policy", type = ReplacementPolicy, choices = [p.value for p in ReplacementPolicy], default = ReplacementPolicy.LRU.value, help = "Replacement policy (LRU, FIFO, or random)")
+  parser.add_argument("--replacement_policy", choices = [p.value for p in ReplacementPolicy], default = ReplacementPolicy.LRU.value, help = "Replacement policy (LRU, FIFO, or random)")
   parser.add_argument("--datafile", type = str, required = True, help = "File with memory addresses (one address per line)")
   parser.add_argument("--json_output", type = str, help = "Optional JSON file to save results")
   parser.add_argument("--csv_output", type = str, help = "Optional CSV file to save results")
@@ -128,7 +133,7 @@ def build_config(args) -> CacheConfig:
     datafile = args.datafile
   )
 
-def load_addresses(filename: str):
+def load_addresses(filename: str) -> list[int]:
 
   addresses = []
 
@@ -144,7 +149,7 @@ def load_addresses(filename: str):
       
   return addresses
 
-def decode_address(address: int, config: CacheConfig):
+def decode_address(address: int, config: CacheConfig) -> tuple[int, int]:
 
   offset_bits = config.offset_bits
   index_bits = config.index_bits
@@ -153,7 +158,7 @@ def decode_address(address: int, config: CacheConfig):
 
   return tag, set_index
 
-def simulate_cache(addresses: list[int], config: CacheConfig):
+def simulate_cache(addresses: list[int], config: CacheConfig) -> CacheStats:
 
   num_sets = config.num_sets
   cache = [CacheSet() for _ in range(num_sets)]
@@ -203,24 +208,89 @@ def simulate_cache(addresses: list[int], config: CacheConfig):
       
   return CacheStats(total_hits = total_hits, total_misses = total_misses, cache = cache)
 
+def print_statistics(stats: CacheStats):
+
+  print("\nCache Statistics")
+  print("----------------")
+  print(f"Accesses : {stats.total_accesses}")
+  print(f"Hits     : {stats.total_hits}")
+  print(f"Misses   : {stats.total_misses}")
+  print(f"Hit Rate : {stats.hit_rate:.2f}%")
+  print(f"Miss Rate: {stats.miss_rate:.2f}%")  
+
+def save_json(stats: CacheStats, config: CacheConfig, filename: str) -> None: # Return type hint for future-me
+
+  output = {
+    "configuration": {
+      "block_size": config.block_size,
+      "num_blocks": config.num_blocks,
+      "associativity": config.associativity,
+      "num_sets": config.num_sets,
+      "replacement_policy": config.replacement_policy.value
+    },
+
+    "statistics": {
+      "total_accesses": stats.total_accesses,
+      "total_hits": stats.total_hits,
+      "total_misses": stats.total_misses,
+      "hit_rate": stats.hit_rate,
+      "miss_rate": stats.miss_rate
+    },
+
+    "sets": [
+      {
+        "set_index": i,
+        "hits": cache_set.hits,
+        "misses": cache_set.misses,
+        "hit_rate": cache_set.hit_rate,
+        "miss_rate": cache_set.miss_rate
+      }
+      for i, cache_set in enumerate(stats.cache)
+    ]
+  }
+
+  with open(filename, "w") as f:
+    json.dump(output, f, indent = 2)
+
+def save_csv(stats: CacheStats, filename: str) -> None:
+
+  with open(filename, "w", newline = "") as f:
+    writer = csv.writer(f)
+    writer.writerow(["Set Index", "Hits", "Misses", "Total Accesses", "Hit Rate (%)", "Miss Rate (%)"])
+
+    for idx, cache_set in enumerate(stats.cache):
+      writer.writerow([
+        idx,
+        cache_set.hits,
+        cache_set.misses,
+        cache_set.total_accesses,
+        f"{cache_set.hit_rate:.2f}",
+        f"{cache_set.miss_rate:.2f}"
+      ])
+
 def main():
   args = parse_args()
   try:
-    validate_inputs(args)
+    config = build_config(args)
+    validate_config(config)
   except (ValueError, FileNotFoundError) as e:
     print(f"Input validation error: {e}")
     return
 
-  config = build_config(args)
-  addresses = load_addresses(args.datafile)
+  addresses = load_addresses(config.datafile)
   stats = simulate_cache(addresses, config)
-
-  print(f'Accesses: {stats.total_accesses}, Hits: {stats.total_hits}, Misses: {stats.total_misses}, Hit Rate: {stats.hit_rate:.2f}%, Miss Rate: {stats.miss_rate:.2f}%')
+  print_statistics(stats)
+  if args.json_output:
+    save_json(stats, config, args.json_output)
+    print(f"Results saved to {args.json_output}")
+  if args.csv_output:
+    save_csv(stats, args.csv_output)
+    print(f"Results saved to {args.csv_output}")
 
 if __name__ == "__main__":
   main()
 
-# TODO 1: Gather statistics and output results in JSON/CSV formats if specified by user
+# COMPLETED TODO 1: Gather statistics and output results in JSON/CSV formats if specified by user
 # TODO 2: Add sweep mode to run multiple configurations and compare results
 # TODO 3: Create performance matrix and visualizations to analyze how different parameters affect hit/miss rates
 # TODO 4: Generate plots for GitHub README using matplotlib
