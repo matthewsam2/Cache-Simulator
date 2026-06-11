@@ -1,24 +1,41 @@
 import argparse
-import random
-import json
 import csv
-
+import json
+import random
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
 
+
 class ReplacementPolicy(Enum): # Enum for replacement policies
+  """Enumeration of supported cache block eviction strategies.
+
+  Attributes:
+    LRU: Least Recently Used - evicts the block that has not been accessed for the longest time.
+    FIFO: First-In-First-Out - evicts the block that was inserted earliest into the set.
+    RANDOM: Random - evicts a randomly selected block from the set.
+  """
   LRU = "LRU"
   FIFO = "FIFO"
   RANDOM = "random"
 
 @dataclass
 class CacheConfig: # Holds simulator settings in one place
+  """Configuration parameters for a cache simulation.
+
+  Attributes:
+    block_size: Cache block size in bytes.
+    num_blocks: Total number of cache blocks.
+    associativity: Number of ways per set.
+    replacement_policy: Cache replacement policy.
+    datafile: Path to the memory trace file.
+  """
+  
   block_size: int
   num_blocks: int
   associativity: int
   replacement_policy: ReplacementPolicy
-  datafile: str
+  datafile: Path
 
   @property
   def num_sets(self) -> int:
@@ -34,12 +51,26 @@ class CacheConfig: # Holds simulator settings in one place
 
 @dataclass
 class CacheBlock: # Represents a single cache line/block
+  """Represents a single cache line or block within a set.
+
+  Attributes:
+    tag: The unique memory address identifier stored in this block.
+    last_used: A cycle timestamp tracking the most recent access (for LRU).
+    insertion_time: A cycle timestamp tracking when the block arrived (for FIFO).
+  """
   tag: int
   last_used: int = 0 # Used by LRU
   insertion_time: int = 0 # Used by FIFO
 
 @dataclass
 class CacheSet: # Represents a set in the cache
+  """Represents a set containing multiple cache blocks.
+
+  Attributes:
+    blocks: A list of cache blocks in this set.
+    hits: The number of cache hits in this set.
+    misses: The number of cache misses in this set.
+  """
   blocks: list[CacheBlock] = field(default_factory = list)
   hits: int = 0
   misses: int = 0
@@ -58,6 +89,13 @@ class CacheSet: # Represents a set in the cache
 
 @dataclass
 class CacheStats: # Holds overall cache performance statistics
+  """Aggregates overall performance metrics across the entire simulator execution.
+
+  Attributes:
+    total_hits: Consolidated number of cache hits across all sets.
+    total_misses: Consolidated number of cache misses across all sets.
+    cache: The global architectural matrix containing all active CacheSets.
+  """
   total_hits: int
   total_misses: int
   cache: list[CacheSet]
@@ -75,12 +113,31 @@ class CacheStats: # Holds overall cache performance statistics
     return (self.total_misses / self.total_accesses) * 100 if self.total_accesses > 0 else 0.0
 
 def is_power_of_two(value: int) -> bool:
-  """Check if an integer is an integral power of two."""
+  """Checks if a number is an integral power of two using bitwise operations.
+
+  Args:
+    value: The integer number to check
+
+  Returns:
+    True if the number is a power of two, False otherwise
+  """
   # A power of two has exactly one bit set to '1' in its binary representation.
   # Subtracting 1 flips all bits up to that '1', causing bitwise AND to yield 0 for powers of two.
   return value > 0 and (value & (value - 1)) == 0
 
-def validate_config(config: CacheConfig):
+def validate_config(config: CacheConfig) -> None:
+  """Validates the cache architecture configuration parameters and input file.
+
+  Ensures that all parameters adhere to hardware simulation limits, geometric
+  constraints, and that the trace file exists.
+
+  Args:
+    config (CacheConfig): A CacheConfig object containing the cache parameters and datafile path.
+
+  Raises:
+    ValueError: If any of the cache parameters are invalid (e.g., non-positive block size, associativity not a power of two, etc.)
+    FileNotFoundError: If the specified datafile does not exist.
+  """
 
   if config.block_size <= 0:
     raise ValueError("Block size must be a positive integer.")
@@ -107,6 +164,16 @@ def validate_config(config: CacheConfig):
     raise FileNotFoundError(f"Datafile '{config.datafile}' not found.")
     
 def parse_args() -> argparse.Namespace:
+  """Parse command-line arguments for the hardware cache simulator.
+
+  Defines and processes input constraints for cache geometries (block size,
+  block count, associativity), eviction choices, and the memory trace file.
+  Also allows optional output formats (CSV, JSON).
+
+  Returns:
+    An argparse.Namespace object containing the parsed command-line parameters
+    mapped to their respective configuration attributes.
+  """
    
   parser = argparse.ArgumentParser(description = "Cache Simulator")
   parser.add_argument("--block_size", type = int, default = 64, help = "Block size in bytes (must be > 0 and a power of two)")
@@ -124,20 +191,47 @@ def parse_args() -> argparse.Namespace:
 
   return parser.parse_args()
 
-def build_config(args) -> CacheConfig:
+def build_config(args: argparse.Namespace) -> CacheConfig:
+  """Construct a validated CacheConfig object from parsed command-line arguments.
+
+  Extracts raw specifications and path boundaries from the CLI namespace and
+  initializes them into structured simulator parameters.
+
+  Args:
+    args: The parsed command-line argument namespace containing attributes for
+          block_size, num_blocks, associativity, replacement_policy, and datafile.
+
+  Returns:
+    A structured dataclass instance containing the parsed configuration ready for validation.
+  """
   return CacheConfig(
     block_size = args.block_size,
     num_blocks = args.num_blocks,
     associativity = args.associativity,
     replacement_policy = ReplacementPolicy(args.replacement_policy),
-    datafile = args.datafile
+    datafile = Path(args.datafile)
   )
 
-def load_addresses(filename: str) -> list[int]:
+def load_addresses(filename: Path) -> list[int]:
+  """Stream and parse hexadecimal memory addresses from a trace data file.
+
+  Reads a text file line-by-line, skips empty spacing, and converts raw hex
+  strings into base-10 integers ready for simulator bit-masking operations.
+
+  Args:
+    filename: A Path object pointing to the file containing memory addresses.
+
+  Raises:
+    ValueError: If a non-empty line cannot be parsed as a valid hexadecimal
+                number, indicating a malformed trace entry or corrupt/invalid data.
+
+  Returns:
+    A list of parsed memory addresses represented as integers.
+  """
 
   addresses = []
 
-  with open(filename, "r") as f:
+  with filename.open("r") as f:
     for line_number, line in enumerate(f, start = 1):
       line = line.strip()
       if not line:
@@ -150,6 +244,20 @@ def load_addresses(filename: str) -> list[int]:
   return addresses
 
 def decode_address(address: int, config: CacheConfig) -> tuple[int, int]:
+  """Extract the tag and set index fields from a raw memory address.
+
+  Uses bitwise right-shifts and generated bitmasks based on the cache's
+  configured offset and index bit widths to isolate specific fields.
+
+  Args:
+    address: The raw numerical memory address integer to decode.
+    config: The structured CacheConfig object providing geometric bit widths.
+
+  Returns:
+    A tuple containing:
+      tag: The unique identifier tag for the memory block.
+      set_index: The target cache set array index where the block resides.
+  """
 
   offset_bits = config.offset_bits
   index_bits = config.index_bits
@@ -159,6 +267,20 @@ def decode_address(address: int, config: CacheConfig) -> tuple[int, int]:
   return tag, set_index
 
 def simulate_cache(addresses: list[int], config: CacheConfig) -> CacheStats:
+  """Execute the functional simulation of the memory cache architecture.
+
+  Orchestrates the global simulation state by streaming access addresses, parsing
+  tags, tracking state tracking histories, and running hit, miss, and eviction
+  routines based on the configuration's architectural policies (LRU, FIFO, RANDOM).
+
+  Args:
+    addresses: A sequence of parsed memory addresses represented as base-10 integers.
+    config: The structured configuration container holding system geometries and policies.
+
+  Returns:
+    An aggregated performance statistics collection holding hit counts, miss counts,
+    and final structural cache states.
+  """
 
   num_sets = config.num_sets
   cache = [CacheSet() for _ in range(num_sets)]
@@ -208,7 +330,15 @@ def simulate_cache(addresses: list[int], config: CacheConfig) -> CacheStats:
       
   return CacheStats(total_hits = total_hits, total_misses = total_misses, cache = cache)
 
-def print_statistics(stats: CacheStats):
+def print_statistics(stats: CacheStats) -> None:
+  """Print the final aggregated simulation performance metrics to the console.
+
+  Outputs structured rows showing total memory access attempts, absolute hit and
+  miss counts, and calculated percentage efficiency rates rounded to two decimal places.
+
+  Args:
+    stats: The collection containing overall simulator performance metrics.
+  """
 
   print("\nCache Statistics")
   print("----------------")
@@ -218,7 +348,17 @@ def print_statistics(stats: CacheStats):
   print(f"Hit Rate : {stats.hit_rate:.2f}%")
   print(f"Miss Rate: {stats.miss_rate:.2f}%")  
 
-def save_json(stats: CacheStats, config: CacheConfig, filename: str) -> None: # Return type hint for future-me
+def save_json(stats: CacheStats, config: CacheConfig, filename: Path) -> None:
+  """Serialize the simulator configuration and performance metrics to a JSON file.
+
+  Generates a structured dictionary containing cache geometry, and a detailed breakdown 
+  of per-set hit/miss ratios, then writes the output to a JSON file.
+
+  Args:
+    stats: The collection containing overall simulator performance metrics.
+    config: The structured configuration container holding system geometries.
+    filename: A Path object specifying the destination target JSON file.
+  """
 
   output = {
     "configuration": {
@@ -249,26 +389,68 @@ def save_json(stats: CacheStats, config: CacheConfig, filename: str) -> None: # 
     ]
   }
 
-  with open(filename, "w") as f:
+  with filename.open("w", encoding = "utf-8") as f:
     json.dump(output, f, indent = 2)
 
-def save_csv(stats: CacheStats, filename: str) -> None:
+def save_csv(stats: CacheStats, config: CacheConfig, filename: Path) -> None:
+  """Export the simulator configuration and performance metrics to a CSV file.
 
-  with open(filename, "w", newline = "") as f:
+  Writes a structured, human-readable tabular file partitioned into distinct
+  sections covering global system geometry, aggregated simulation performance 
+  ratios, and a detailed row-by-row matrix of individual cache set histories.
+
+  Args:
+    stats: The collection containing overall simulator performance metrics.
+    config: The structured configuration container holding system geometries.
+    filename: A Path object specifying the destination target CSV file.
+  """  
+
+  with filename.open("w", newline="", encoding="utf-8") as f:
     writer = csv.writer(f)
-    writer.writerow(["Set Index", "Hits", "Misses", "Total Accesses", "Hit Rate (%)", "Miss Rate (%)"])
 
-    for idx, cache_set in enumerate(stats.cache):
+    writer.writerow(["[Configuration]"])
+    writer.writerow(["block_size", config.block_size])
+    writer.writerow(["num_blocks", config.num_blocks])
+    writer.writerow(["associativity", config.associativity])
+    writer.writerow(["num_sets", config.num_sets])
+    writer.writerow(["replacement_policy", config.replacement_policy.value])
+
+    writer.writerow([])
+
+    writer.writerow(["[Statistics]"])
+    writer.writerow(["total_accesses", stats.total_accesses])
+    writer.writerow(["total_hits", stats.total_hits])
+    writer.writerow(["total_misses", stats.total_misses])
+    writer.writerow(["hit_rate", stats.hit_rate])
+    writer.writerow(["miss_rate", stats.miss_rate])
+
+    writer.writerow([])
+
+    writer.writerow(["[Sets]"])
+    writer.writerow([
+      "set_index",
+      "hits",
+      "misses",
+      "hit_rate",
+      "miss_rate"
+    ])
+
+    for i, cache_set in enumerate(stats.cache):
       writer.writerow([
-        idx,
+        i,
         cache_set.hits,
         cache_set.misses,
-        cache_set.total_accesses,
-        f"{cache_set.hit_rate:.2f}",
-        f"{cache_set.miss_rate:.2f}"
+        cache_set.hit_rate,
+        cache_set.miss_rate
       ])
 
-def main():
+def main() -> None:
+  """Orchestrate the primary execution pipeline of the cache simulator.
+
+  Coordinates command-line argument processing, enforces hardware architectural 
+  validations, streams and decodes raw memory traces, executes the cache lookup
+  and replacement algorithms, and routes final statistics to outputs.
+  """
   args = parse_args()
   try:
     config = build_config(args)
@@ -280,18 +462,20 @@ def main():
   addresses = load_addresses(config.datafile)
   stats = simulate_cache(addresses, config)
   print_statistics(stats)
+  # Convert raw string paths to Path objects for output functions
   if args.json_output:
-    save_json(stats, config, args.json_output)
-    print(f"Results saved to {args.json_output}")
+    json_path = Path(args.json_output)
+    save_json(stats, config, json_path)
+    print(f"Results saved to {json_path}")
   if args.csv_output:
-    save_csv(stats, args.csv_output)
-    print(f"Results saved to {args.csv_output}")
+    csv_path = Path(args.csv_output)
+    save_csv(stats, config, csv_path)
+    print(f"Results saved to {csv_path}")
 
 if __name__ == "__main__":
   main()
 
-# COMPLETED TODO 1: Gather statistics and output results in JSON/CSV formats if specified by user
-# TODO 2: Add sweep mode to run multiple configurations and compare results
-# TODO 3: Create performance matrix and visualizations to analyze how different parameters affect hit/miss rates
-# TODO 4: Generate plots for GitHub README using matplotlib
-# TODO 5: Celebrate turning an old lab assignment into something good for a portfolio
+# TODO 1: Add sweep mode to run multiple configurations and compare results
+# TODO 2: Create performance matrix and visualizations to analyze how different parameters affect hit/miss rates
+# TODO 3: Generate plots for GitHub README using matplotlib
+# TODO 4: Celebrate turning an old lab assignment into something good for a portfolio
