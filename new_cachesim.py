@@ -1114,9 +1114,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
-# COMPLETED TODO 1: Add sweep mode to run multiple configurations and compare results, creating a performance matrix
-# COMPLETED TODO 2: Create visualizations to analyze how different parameters affect hit/miss rates
-# COMPLETED TODO 3: Generate plots for GitHub README using matplotlib
-# COMPLETED TODO 4: Test with large trace file
-# TODO 5: Write README.md for GitHub
